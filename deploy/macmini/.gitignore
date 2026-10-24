@@ -1,0 +1,19 @@
+# Real configuration. .env.example is the only env file that belongs in git.
+.env
+.env.*
+!.env.example
+
+# Dumps from scripts/backup.sh
+backups/
+
+# A filled tunnel config and the credentials file from `cloudflared tunnel create`.
+cloudflared/config.yml
+cloudflared/*.json
+*.pem
+
+# Draft-proxy state belongs in ~/.postiz-draft-proxy, mode 0600/0700, not here.
+draft-proxy/tokens.json
+draft-proxy/org-api-key
+draft-proxy/*.log
+draft-proxy/__pycache__/
+draft-proxy/*.pyc

@@ -1,0 +1,10 @@
+# Optional localhost proxy. TLS is terminated by Cloudflare Tunnel, so Caddy
+# must not obtain its own certificate and must not listen on a public port.
+{
+	auto_https off
+	admin off
+}
+
+:80 {
+	reverse_proxy postiz:5000
+}

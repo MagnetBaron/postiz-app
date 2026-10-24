@@ -1,0 +1,254 @@
+# Postiz on an Apple Silicon Mac mini.
+#
+# Image pin checked 2026-10-24 from the registry OCI index (not from docs).
+# Each index below contains a linux/arm64 (or arm64/v8) manifest. Compose is
+# given the index digest so Docker Desktop / OrbStack pulls the arm64 image.
+#
+#   ghcr.io/gitroomhq/postiz-app:v2.25.2
+#     index  sha256:6b52f56416a4a176a858c4e3b74acd2873257103f80b6564bb82edc64359b34f
+#     arm64  sha256:bb44e9e4de0b419a213aa05751608754a04ca0adb87f7505b5a6a541d04c2224
+#   postgres:17.6-alpine
+#     index  sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94
+#     arm64  sha256:9b9fb55f7e3b2149854def33c728b781dc44d1c5e86492ad62912a527ae234b3
+#   postgres:16.11-alpine          (Temporal's database)
+#     index  sha256:4327b9fd295502f326f44153a1045a7170ddbfffed1c3829798328556cfd09e2
+#     arm64  sha256:8c9a0a2a8d37c21daffac4f1c40dff2d34fe227630fc503fca842022032661db
+#   redis:7.2.11
+#     index  sha256:76dc61f6ca42748060aa86080ef8393d0c118660db0a1dead26c2b8e94bf601b
+#     arm64  sha256:c9b07f4fd5ebdac682148847b39e94610b4ce46c1cd38df7b427c71c636e9ffb
+#   elasticsearch:7.17.27
+#     index  sha256:9a6443f55243f6acbfeb4a112d15eb3b9aac74bf25e0e39fa19b3ddd3a6879d0
+#     arm64  sha256:f1ee7d61820aed6cc83a05f481ef822644fa8134bee9c74e8c89ea8cf85047e0
+#   temporalio/auto-setup:1.28.1
+#     index  sha256:607d68caa111338d754771efb876c92dfcdae06d056e4530bb31cd0f37406e6a
+#     arm64  sha256:28a4ea44b3ab6ecff858ed78ca63a5d0677dcc6b1cf86ef8f333a560d646813e
+#   temporalio/ui:2.34.0
+#     index  sha256:cb17ea423d76a8a19a269d0bcd81fc12eee1f6365acd2a56b590dafb35696a95
+#     arm64  sha256:5ce588e1c6c6046611f1ca7ca136db80792518cad5b945ffd3387237e8926558
+#   caddy:2.10.2                   (optional profile "caddy")
+#     index  sha256:c3d7ee5d2b11f9dc54f947f68a734c84e9c9666c92c88a7f30b9cba5da182adb
+#     arm64  sha256:8dbca3525dd8dce671e495665a0eb297a83ec87ee30f373947d0ea93115949db
+#
+# v2.25.2 is the upstream git tag on this fork's current commit
+# (9383f5be4d310c346e33a3748a9a7ded64c96fed). The container is that upstream
+# image. This file does not build the fork.
+#
+# API_LIMIT is not hardcoded. The image reads process.env.API_LIMIT
+# (apps/backend/src/app.module.ts). ${API_LIMIT:-300} comes from .env.
+#
+# Upstream compose bind-mounts /var/lib/elasticsearch/data and
+# /var/lib/postgresql/data on the host. Those are named volumes here, and
+# Elasticsearch uses the image data directory /usr/share/elasticsearch/data.
+# Published ports are 127.0.0.1 only. Postgres, Redis, and Elasticsearch
+# are not published.
+
+name: postiz
+
+services:
+  postiz:
+    image: ghcr.io/gitroomhq/postiz-app:v2.25.2@sha256:6b52f56416a4a176a858c4e3b74acd2873257103f80b6564bb82edc64359b34f
+    container_name: postiz
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Internal addresses are forced so a copied .env cannot point them at
+      # the public hostname or at 127.0.0.1 on the Mac.
+      DATABASE_URL: postgresql://postiz-user:${POSTGRES_PASSWORD}@postiz-postgres:5432/postiz-db-local
+      REDIS_URL: redis://postiz-redis:6379
+      BACKEND_INTERNAL_URL: http://localhost:3000
+      TEMPORAL_ADDRESS: temporal:7233
+      API_LIMIT: ${API_LIMIT:-300}
+      STORAGE_PROVIDER: ${STORAGE_PROVIDER:-cloudflare}
+      IS_GENERAL: "true"
+      RUN_CRON: "true"
+    volumes:
+      - postiz-config:/config
+      - postiz-uploads:/uploads
+    ports:
+      - "127.0.0.1:4007:5000"
+    networks:
+      - postiz-internal
+    depends_on:
+      postiz-postgres:
+        condition: service_healthy
+      postiz-redis:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:5000/').then(()=>process.exit(0)).catch(()=>process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 90s
+
+  postiz-postgres:
+    image: postgres:17.6-alpine@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94
+    container_name: postiz-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postiz-user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: postiz-db-local
+    volumes:
+      - postiz-postgres-data:/var/lib/postgresql/data
+    networks:
+      - postiz-internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postiz-user -d postiz-db-local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  postiz-redis:
+    image: redis:7.2.11@sha256:76dc61f6ca42748060aa86080ef8393d0c118660db0a1dead26c2b8e94bf601b
+    container_name: postiz-redis
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "yes"]
+    volumes:
+      - postiz-redis-data:/data
+    networks:
+      - postiz-internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  temporal-elasticsearch:
+    image: elasticsearch:7.17.27@sha256:9a6443f55243f6acbfeb4a112d15eb3b9aac74bf25e0e39fa19b3ddd3a6879d0
+    container_name: temporal-elasticsearch
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: -Xms256m -Xmx256m
+      cluster.routing.allocation.disk.threshold_enabled: "true"
+      cluster.routing.allocation.disk.watermark.low: 512mb
+      cluster.routing.allocation.disk.watermark.high: 256mb
+      cluster.routing.allocation.disk.watermark.flood_stage: 128mb
+    volumes:
+      - temporal-elasticsearch-data:/usr/share/elasticsearch/data
+    networks:
+      - postiz-internal
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS 'http://127.0.0.1:9200/_cluster/health?wait_for_status=yellow&timeout=5s' >/dev/null",
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 40s
+
+  temporal-postgresql:
+    image: postgres:16.11-alpine@sha256:4327b9fd295502f326f44153a1045a7170ddbfffed1c3829798328556cfd09e2
+    container_name: temporal-postgresql
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: temporal
+      POSTGRES_PASSWORD: ${TEMPORAL_POSTGRES_PASSWORD:?set TEMPORAL_POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: temporal
+    volumes:
+      - temporal-postgres-data:/var/lib/postgresql/data
+    networks:
+      - postiz-internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U temporal -d temporal"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  temporal:
+    image: temporalio/auto-setup:1.28.1@sha256:607d68caa111338d754771efb876c92dfcdae06d056e4530bb31cd0f37406e6a
+    container_name: temporal
+    restart: unless-stopped
+    depends_on:
+      temporal-postgresql:
+        condition: service_healthy
+      temporal-elasticsearch:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_USER: temporal
+      POSTGRES_PWD: ${TEMPORAL_POSTGRES_PASSWORD:?set TEMPORAL_POSTGRES_PASSWORD in .env}
+      POSTGRES_SEEDS: temporal-postgresql
+      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/development-sql.yaml
+      ENABLE_ES: "true"
+      ES_SEEDS: temporal-elasticsearch
+      ES_VERSION: v7
+      TEMPORAL_NAMESPACE: default
+    volumes:
+      - ./temporal/dynamicconfig:/etc/temporal/config/dynamicconfig:ro
+    networks:
+      - postiz-internal
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/7233'"]
+      interval: 15s
+      timeout: 5s
+      retries: 30
+      start_period: 40s
+
+  temporal-ui:
+    image: temporalio/ui:2.34.0@sha256:cb17ea423d76a8a19a269d0bcd81fc12eee1f6365acd2a56b590dafb35696a95
+    container_name: temporal-ui
+    restart: unless-stopped
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://127.0.0.1:8080
+    ports:
+      - "127.0.0.1:8080:8080"
+    networks:
+      - postiz-internal
+    healthcheck:
+      # The 2.34.0 image entrypoint is start-ui-server.sh and the build
+      # uses bash. wget is not part of that image config.
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/8080'"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  # Not started by `docker compose up`. See README. The tunnel should point
+  # at 127.0.0.1:4007 unless you deliberately start this profile.
+  caddy:
+    profiles: ["caddy"]
+    image: caddy:2.10.2@sha256:c3d7ee5d2b11f9dc54f947f68a734c84e9c9666c92c88a7f30b9cba5da182adb
+    container_name: postiz-caddy
+    restart: unless-stopped
+    depends_on:
+      postiz:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8088:80"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+    networks:
+      - postiz-internal
+
+volumes:
+  postiz-postgres-data:
+  postiz-redis-data:
+  postiz-config:
+  postiz-uploads:
+  temporal-postgres-data:
+  temporal-elasticsearch-data:
+
+networks:
+  postiz-internal:
+    driver: bridge
