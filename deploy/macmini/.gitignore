@@ -10,3 +10,10 @@ backups/
 cloudflared/config.yml
 cloudflared/*.json
 *.pem
+
+# Draft-proxy state belongs in ~/.postiz-draft-proxy, mode 0600/0700, not here.
+draft-proxy/tokens.json
+draft-proxy/org-api-key
+draft-proxy/*.log
+draft-proxy/__pycache__/
+draft-proxy/*.pyc

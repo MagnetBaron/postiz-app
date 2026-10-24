@@ -4,11 +4,11 @@ Clean install for a new Apple Silicon Mac. Nothing in this folder deploys the st
 
 The Mac that already has an unused `~/postiz` directory is not the install target. That directory is covered only in the appendix, and only for non-secret values.
 
-Bots create drafts through the public API and MCP. The owner publishes. Social logins and developer-app registration are done by the owner, on this Mac. Comment and DM reading is not part of this install. That stays on `server@themagnetbaron.com`, and that mailbox is not configured here.
+Bots create drafts only. They talk to a local gatekeeper proxy, not to Postiz. The owner publishes from the Postiz calendar. Social logins and developer-app registration are done by the owner, on this Mac. Comment and DM reading is not part of this install. That stays on `server@themagnetbaron.com`, and that mailbox is not configured here.
 
 ## Recommended public HTTPS path
 
-Use a Cloudflare Tunnel (cloudflared, a named tunnel). The tunnel connects out from the Mac to Cloudflare and forwards one hostname to `http://127.0.0.1:4007`. No inbound router ports.
+Use a Cloudflare Tunnel (cloudflared, a named tunnel). The tunnel connects out from the Mac to Cloudflare. The owner hostname forwards to Postiz at `http://127.0.0.1:4007`. A second hostname forwards only to the draft proxy at `http://127.0.0.1:4017`. No inbound router ports.
 
 This is the path to use, for four reasons:
 
@@ -60,7 +60,10 @@ Install Homebrew if `brew` is not found, then open a new terminal so `/opt/homeb
 
 ```bash
 brew install cloudflared
+brew install python@3.12
 ```
+
+The draft proxy is Python's standard library. It has no pip packages. `python3` must be the Homebrew one so the launchd agent can find it after a reboot.
 
 ### 3. Docker
 
@@ -112,13 +115,17 @@ cloudflared tunnel create postiz
 cp cloudflared/config.yml.example ~/.cloudflared/config.yml
 ```
 
-Edit `~/.cloudflared/config.yml`. Set the tunnel UUID, your macOS username, and the hostname. The service stays `http://127.0.0.1:4007`.
+Edit `~/.cloudflared/config.yml`. Set the tunnel UUID and your macOS username. The template has two hostnames:
+
+- `postiz.example.com` goes to `http://127.0.0.1:4007`. That is the owner dashboard. Replace the example name. Do not give this hostname to bots.
+- `bots.example.com` goes to `http://127.0.0.1:4017`. That is the draft proxy only. Replace the example name. Do not point this hostname at port 4007.
 
 ```bash
-cloudflared tunnel route dns postiz YOUR.HOSTNAME
+cloudflared tunnel route dns postiz YOUR.OWNER.HOSTNAME
+cloudflared tunnel route dns postiz YOUR.BOT.HOSTNAME
 ```
 
-That creates the DNS record. No router change.
+That creates the DNS records. No router change. The bot hostname must point only at the proxy. Postiz is not on that route.
 
 Try the tunnel once in the foreground after the stack is up (`cloudflared tunnel --config ~/.cloudflared/config.yml run`). Until then, DNS may already resolve to Cloudflare while the origin is down. `preflight.sh` only checks that the name resolves.
 
@@ -163,7 +170,7 @@ R2 variable names, from source:
 ./scripts/preflight.sh
 ```
 
-The last line must be `preflight: passed`. It checks architecture, Docker, ports 4007, 8080, and 8088, `.env` mode `600`, required variables, the https origin, DNS for that hostname, and `cloudflared`. Provider keys are allowed to be empty. It does not print secrets.
+The last line must be `preflight: passed`. It checks architecture, Docker, ports 4007, 4017, 8080, and 8088, `.env` mode `600`, required variables, the https origin, DNS for that hostname, and `cloudflared`. Provider keys are allowed to be empty. It does not print secrets. Port 4017 is the draft proxy. A Python listener there is expected once the proxy is running.
 
 `POSTIZ_PREFLIGHT_SKIP_DNS=1` skips DNS while you are still choosing a name. `POSTIZ_PREFLIGHT_ALLOW_INCOMPLETE_R2=1` lets the UI boot before the R2 keys are filled. Uploads will fail until the keys are real. Do not leave either skip in place for the real boot.
 
@@ -206,7 +213,11 @@ Open `https://YOUR.HOSTNAME/auth` in a private window. The page should say regis
 
 `canRegister` in `apps/backend/src/services/auth/auth.service.ts` still allows one local signup when the flag is true and the database has zero organizations. That is only the empty-database case. `Provider.GENERIC` ignores the flag. Do not set `POSTIZ_GENERIC_OAUTH`.
 
-### 11. Start at login
+### 11. Draft proxy
+
+Do this after the first admin account exists and you can see the organization API key. The steps are in [Draft proxy](#draft-proxy) below. Short version: put the org key in the Keychain, issue one proxy token per bot, then come back here for launchd. Do not put the org key in a bot config.
+
+### 12. Start at login
 
 Turn on start-at-login for OrbStack or Docker Desktop first, so the engine is up when the agent runs.
 
@@ -214,16 +225,18 @@ Turn on start-at-login for OrbStack or Docker Desktop first, so the engine is up
 ./scripts/install-launchd.sh
 ```
 
-This copies the plists into `~/Library/LaunchAgents` and loads them for your user. It does not use sudo. The tunnel agent is loaded only after `~/.cloudflared/config.yml` exists. Run the script again after you create that file.
+This copies the plists into `~/Library/LaunchAgents` and loads them for your user. It does not use sudo. The tunnel agent is loaded only after `~/.cloudflared/config.yml` exists. The draft-proxy agent is loaded only after `python3` exists. Run the script again after you create the tunnel file or install Python.
 
 Logs:
 
 - `~/Library/Logs/postiz-stack.log`
 - `~/Library/Logs/postiz-tunnel.log`
+- `~/Library/Logs/postiz-draft-proxy/proxy.log` (one JSON line per request)
+- `~/Library/Logs/postiz-draft-proxy/launchd.out.log` and `launchd.err.log`
 
 The stack agent runs `scripts/start-stack.sh`, which waits up to three minutes for `docker info`, then `docker compose up -d`. Container restart policy is `unless-stopped`, so Docker brings the containers back when the engine itself restarts.
 
-### 12. Backups
+### 13. Backups
 
 ```bash
 ./scripts/backup.sh
@@ -247,11 +260,13 @@ docker compose start postiz
 
 ## Approval gate
 
-Bots must create drafts. The owner publishes from the Mac.
+Bots must create drafts. The owner publishes from the Mac, in the Postiz calendar.
 
-There is no environment variable that forces drafts. A client that holds the organization API key can publish.
+The draft proxy is what enforces that. Postiz itself has no environment variable that forces drafts. A client that holds the organization API key can still publish, which is why that key stays in the Keychain and is never given to a bot. The owner's browser session can publish too. That is the approval path.
 
 ### Public API
+
+Bots do not call this on the owner hostname, and they do not send the org key. The proxy forwards a draft here and rejects everything else. The shapes below are what Postiz accepts if the org key is presented directly. That is why the key stays on the Mac.
 
 `POST https://YOUR.HOSTNAME/api/public/v1/posts`
 
@@ -295,7 +310,9 @@ In the product, filter the calendar to Draft and open the post. The composer sav
 
 ### MCP
 
-The MCP server is mounted at `/mcp` on the Nest app (`start.mcp.ts`). Through the public hostname that is:
+Bots use `https://YOUR.BOT.HOSTNAME/api/mcp` with their proxy token. The proxy injects the org key. The paths below are what Postiz mounts. The key-in-URL forms are rejected by the proxy.
+
+The MCP server is mounted at `/mcp` on the Nest app (`start.mcp.ts`). Through the owner hostname that is:
 
 - `https://YOUR.HOSTNAME/api/mcp` with header `Authorization: Bearer <api key>` (this path strips a leading `Bearer `)
 - `https://YOUR.HOSTNAME/api/mcp/<api key>` and `https://YOUR.HOSTNAME/api/sse/<api key>` for clients that put the key in the URL
@@ -325,6 +342,94 @@ The upstream compose hardcodes `API_LIMIT: 30`. The public API docs describe the
 
 Set a lower number in `.env` if you want a tighter cap, then recreate the `postiz` container.
 
+## Draft proxy
+
+The proxy is `deploy/macmini/draft-proxy/`. It is Python's standard library (`proxy.py` and `policy.py`) so there is no package to install or audit. `policy.py` is the allowlist. `proxy.py` buffers the body, checks it, then forwards the same bytes.
+
+It listens on `127.0.0.1:4017` only. launchd runs it as the user agent `com.magnetbaron.postiz.draft-proxy`.
+
+The bot hostname in the tunnel points only at this port. The owner hostname points at Postiz on port 4007. Bots are not given the owner hostname. A proxy token sent to `https://YOUR.OWNER.HOSTNAME/api/mcp` or `/api/public` fails, because Postiz does not know proxy tokens and the bot does not have the org key. A direct call with the org key would succeed on the owner hostname. Do not put that key anywhere a bot can read it.
+
+### Keychain
+
+On the owner hostname, open Settings, then Agents / Dev, and reveal the organization API key. Store it in the login Keychain. Type it so it does not land in shell history:
+
+```bash
+read -r -s ORG_KEY
+security add-generic-password -U -s postiz-macmini -a org-api-key -w "$ORG_KEY"
+unset ORG_KEY
+```
+
+The account name must be `org-api-key`. The service name must be `postiz-macmini`. The proxy reads that item on each request and does not write it to the log.
+
+A mode-0600 file is the fallback if Keychain is unavailable. Create the directory and the file yourself, paste the key, and do not commit it:
+
+```bash
+mkdir -p ~/.postiz-draft-proxy
+chmod 700 ~/.postiz-draft-proxy
+touch ~/.postiz-draft-proxy/org-api-key
+chmod 600 ~/.postiz-draft-proxy/org-api-key
+```
+
+The proxy uses the file when it exists, including when the Keychain item also exists. Prefer the Keychain and leave the file absent.
+
+### One token per bot
+
+From `deploy/macmini/draft-proxy`:
+
+```bash
+python3 proxy.py token add writer
+python3 proxy.py token list
+python3 proxy.py token revoke writer
+```
+
+`token add` prints the token once, on stdout. It is stored only as a sha256 hash in `~/.postiz-draft-proxy/tokens.json`, mode 0600. The directory is mode 0700. Copy the token into that bot's config on this Mac, then clear the terminal scrollback. `token list` prints names and dates, not tokens. `token revoke` removes that bot immediately. The proxy re-reads the file on every request.
+
+The bot sends `Authorization: Bearer <proxy-token>` to both MCP and the public API. The proxy strips that header. Upstream, MCP gets `Authorization: Bearer <org key>`. The public API gets `Authorization: <org key>` with no Bearer prefix, which is what `public.auth.middleware.ts` compares.
+
+Bot MCP URL: `https://YOUR.BOT.HOSTNAME/api/mcp`
+
+Bot REST URL, for a draft only: `https://YOUR.BOT.HOSTNAME/api/public/v1/posts`
+
+Do not use `/api/mcp/<key>`, `/api/sse/<key>`, or `/api/message/<key>`. Those put a credential in the path. The proxy rejects them.
+
+### What bots may call
+
+MCP methods: `initialize`, `tools/list`, any `notifications/...` method, and `tools/call` for this list only. Names are the MCP ids in v2.25.2.
+
+Read-only, from the tool files:
+
+- `postsListTool`
+- `integrationList`
+- `groupList`
+- `integrationSchema`
+- `mediaListTool`
+- `mediaStatusTool`
+
+`schedulePostTool` is allowed only when every `type` value in the arguments is the exact string `draft`. `schedule`, `now`, `Draft`, ` draft`, and a missing type are rejected. A JSON-RPC batch is rejected as a whole when any element is disallowed. Duplicate JSON keys are rejected, because a normal parser keeps the last one and that is ambiguous.
+
+These tools are rejected even where the source sets `readOnlyHint: true`, because they belong to a write workflow: `generateVideoOptions`, `videoFunctionTool`, `videoStatusTool`, `clippingStatusTool`, `uploadWidgetStatusTool`.
+
+These writes are rejected: `triggerTool`, `postSettingsTool`, `deletePostTool`, `generateImageTool`, `generateVideoTool`, `clippingTool`, `clippingWidgetTicketTool`, `uploadFromUrlTool`, `uploadWidgetTool`, `uploadWidgetTicketTool`, and any other name.
+
+Public REST allows GET on the list and read routes (`/posts`, `/media`, `/integrations`, `/groups`, `/me`, `/is-connected`, `/notifications`, `/find-slot/<id>`, `/integration-settings/<id>`, `/posts/<id>/missing`, `/media/<id>/status`, `/analytics/...`) and POST `/api/public/v1/posts` when the top-level `type` is exactly `draft` and no nested `type` is anything else. PUT `/posts/<id>/status`, DELETE, comments, and every other write are rejected.
+
+Uploads are rejected, including POST `/upload`, POST `/upload-from-url`, and the upload tools. A draft does not need them. Text is enough, and an image has to already be on `https://cdn.magnetbaron.com`. `mediaListTool` returns those paths. `RESTRICT_UPLOAD_DOMAINS` makes Postiz refuse any other media host. An upload endpoint would store bytes the bot chose, and upload-from-url would fetch a URL the bot chose. Neither is required to file a draft.
+
+A `date` on a draft is allowed. In `posts.service.ts`, `createPost` queues a post only when `type` is `schedule` or `now`. `changePostStatus` queues when `status` is `schedule`. The proxy rejects `status` and `republish` anywhere in the body. `settings.__type` is the provider id (`facebook`, and the rest). It is a different key, and it does not publish.
+
+The proxy returns 4xx for a bad token, unparseable JSON, an unknown content type, a body over 1 MiB, a chunked body it cannot buffer completely, an unknown path, or a method it does not allow. It does not forward a body it has not buffered and parsed. The log line is JSON: time, bot, method, path, tool, type, decision, reason. No body and no secret. The file rotates under `~/Library/Logs/postiz-draft-proxy/proxy.log`.
+
+The owner publishes from the calendar on the owner hostname. Filter to Draft and use the schedule action. Bots are not given `PUT /posts/<id>/status`.
+
+Tests:
+
+```bash
+python3 -m unittest discover -s deploy/macmini/draft-proxy -v
+```
+
+The same command runs in `.github/workflows/draft-proxy.yml` on push and pull request.
+
 ## Tailscale Funnel
 
 Fallback only. Install Tailscale from Homebrew (`brew install --cask tailscale`), sign in, and publish the local port with Funnel. The current CLI is `tailscale funnel 4007`. Confirm the exact flags in `tailscale funnel --help` on that Mac. The public name will be an `https://<machine>.<tailnet>.ts.net` hostname.
@@ -336,7 +441,7 @@ Put that exact origin in `MAIN_URL`, `FRONTEND_URL`, and `NEXT_PUBLIC_BACKEND_UR
 - Generate `JWT_SECRET` and both database passwords on this Mac. Do not copy them from another machine.
 - `.env` stays mode `600` in `deploy/macmini/`. Docker reads it. A copy in Keychain is a backup, not a replacement: `security add-generic-password -U -s postiz-macmini -a JWT_SECRET -w` and then type or paste the value in the terminal so it is not in the shell history (`read -r -s` into the command). Do not put the value on the `security` command line in a script that gets logged.
 - Provider client secrets, the R2 secret, the tunnel credentials JSON, and the organization API key stay on this Mac.
-- The organization API key can publish. Treat it like a posting key even though bots are instructed to send drafts.
+- The organization API key can publish. It lives in the Keychain item `org-api-key` (or the 0600 file) and is not given to bots. Bots get a proxy token. Revoke the token to stop that bot. The owner's calendar session can still publish.
 - Do not wire comment reading, DM reading, or comment-reply plugs. `server@themagnetbaron.com` is the account that reads comments and DMs. Its password does not go in `.env`.
 - Postiz still requests comment-related OAuth scopes on Meta, Instagram, and Threads because `checkScopes` rejects a token that is missing them. Grant the scopes so connect succeeds. Do not use Postiz to read or answer comments.
 
@@ -348,9 +453,10 @@ Work top to bottom. The first four networks are Facebook, Instagram, Pinterest, 
 
 - [ ] Cloudflare account is the one that already hosts `cdn.magnetbaron.com`.
 - [ ] A hostname for the Postiz app is chosen. It is not the CDN hostname and not `social.localhost`.
+- [ ] A second hostname is chosen for bots. It is not the owner hostname and not the CDN hostname.
 - [ ] `cloudflared tunnel login` and `cloudflared tunnel create postiz` have been run on this Mac.
-- [ ] `~/.cloudflared/config.yml` points that hostname at `http://127.0.0.1:4007`.
-- [ ] `cloudflared tunnel route dns` created the record. The router has no new port forwards.
+- [ ] `~/.cloudflared/config.yml` points the owner hostname at `http://127.0.0.1:4007` and the bot hostname only at `http://127.0.0.1:4017`.
+- [ ] `cloudflared tunnel route dns` created both records. The router has no new port forwards.
 - [ ] `MAIN_URL`, `FRONTEND_URL`, and `NEXT_PUBLIC_BACKEND_URL` use that `https://` origin.
 
 ## b. Values you must put in .env
@@ -534,15 +640,15 @@ After you save any new key, recreate the container:
 docker compose up -d --force-recreate postiz
 ```
 
-## d. API key and MCP
+## d. API key, draft proxy, and MCP
 
-1. Log in on the public https hostname.
+1. Log in on the owner https hostname (port 4007 through the tunnel). Do not use the bot hostname for this.
 2. Open Settings, then Agents / Dev. The page is `/settings`. The tab id is `agents` (`settings.component.tsx`). It is shown when `IS_GENERAL` is true and the plan includes `public_api`. With Stripe unset, the self-hosted organization is treated as `ULTIMATE`, which includes it (`pricing.ts`).
-3. Reveal the organization API key. Rotating it (`POST /user/api-key/rotate`) invalidates bots that already have it. The key is created with the organization (`organization.repository.ts`).
-4. Point bots at `https://YOUR.HOSTNAME/api/mcp` with `Authorization: Bearer <key>`, from this Mac. The public API base for drafts is `https://YOUR.HOSTNAME/api/public/v1`, and that header is the raw key with no `Bearer` prefix.
-5. The bot instruction is: `schedulePostTool` with `type` `draft` only. The owner approves in the calendar or with `PUT /api/public/v1/posts/<id>/status` and `{"status":"schedule"}`.
-6. `postsListTool` is safe to use for listing. It does not publish.
-7. Do not give bots `type` `now` or `type` `schedule`. The server will accept both.
+3. Reveal the organization API key. Store it with `security add-generic-password -U -s postiz-macmini -a org-api-key` as in the Draft proxy section. Rotating it (`POST /user/api-key/rotate`) means you must update that Keychain item. Bots do not have this key, so a rotation does not by itself cut them off. Revoke their proxy tokens too if you want them stopped.
+4. `brew install python@3.12` if it is not installed. From `deploy/macmini/draft-proxy`, run `python3 proxy.py token add NAME` once per bot. Give that bot `https://YOUR.BOT.HOSTNAME/api/mcp` and `Authorization: Bearer <proxy-token>`.
+5. Confirm the bot hostname in `~/.cloudflared/config.yml` points at `http://127.0.0.1:4017` and the owner hostname points at `http://127.0.0.1:4007`. Run `./scripts/install-launchd.sh`.
+6. The bot instruction is: `schedulePostTool` with `type` exactly `draft`, or `postsListTool` to list. The proxy rejects `schedule`, `now`, and every other write. The owner publishes in the Postiz calendar. Bots cannot call `PUT /posts/<id>/status`.
+7. To stop a bot, `python3 proxy.py token revoke NAME`. To see what it did, read `~/Library/Logs/postiz-draft-proxy/proxy.log`. Each line names the bot. The lines do not contain the post body or either secret.
 
 ## e. What stays on this Mac
 
@@ -552,10 +658,12 @@ All of these stay on the Mac mini:
 - `~/.cloudflared/<uuid>.json` and `~/.cloudflared/config.yml`
 - The Postiz and Temporal Docker volumes (Postgres, Redis, Elasticsearch, uploads)
 - R2 access keys, every provider client secret, and the organization API key
-- MCP client configs, because they contain that API key
+- The Keychain item `postiz-macmini` / `org-api-key`, or `~/.postiz-draft-proxy/org-api-key` (mode 0600)
+- `~/.postiz-draft-proxy/tokens.json` (mode 0600) and the bot configs that hold the proxy tokens
+- `~/Library/Logs/postiz-draft-proxy/`
 - Backups under `deploy/macmini/backups/`
 
-A second copy of `JWT_SECRET` and the organization API key may sit in the login Keychain under the service name `postiz-macmini`. Docker still reads `.env`. Keychain does not replace it.
+A second copy of `JWT_SECRET` may sit in the login Keychain under the service name `postiz-macmini`. Docker still reads `.env`. Keychain does not replace `.env`. The org API key is the other way around: the proxy reads Keychain (or the 0600 file), and Docker does not need that key in `.env`.
 
 Do not put `server@themagnetbaron.com` credentials, comment tokens, or DM tokens in this `.env`.
 
@@ -584,6 +692,7 @@ The old Caddy plan is not used. Use the tunnel.
 - Drafts: `apps/backend/src/public-api/routes/v1/public.integrations.controller.ts`, `libraries/nestjs-libraries/src/dtos/posts/change.post.status.dto.ts`, `libraries/nestjs-libraries/src/chat/tools/integration.schedule.post.ts`, `libraries/nestjs-libraries/src/chat/tools/posts.list.tool.ts`, `libraries/nestjs-libraries/src/chat/start.mcp.ts`.
 - Storage: `libraries/nestjs-libraries/src/upload/upload.factory.ts`, `cloudflare.storage.ts`, `r2.uploader.ts`.
 - Registration: `apps/backend/src/services/auth/auth.service.ts`, `apps/frontend/src/app/(app)/auth/page.tsx`.
+- Draft proxy allowlist: MCP ids in `libraries/nestjs-libraries/src/chat/tools/` (`schedulePostTool` arguments in `integration.schedule.post.ts`), public routes in `apps/backend/src/public-api/routes/v1/public.integrations.controller.ts`, publish switch in `posts.service.ts` `createPost` and `changePostStatus`.
 - Provider redirect URIs and scopes: the `generateAuthUrl` and `scopes` fields in `libraries/nestjs-libraries/src/integrations/social/`.
 - Provider setup pages: `https://docs.postiz.com/providers/facebook`, `instagram`, `pinterest`, `youtube`, `x-twitter`, `tiktok`, `linkedin`.
 - Meta connect bug: [https://github.com/gitroomhq/postiz-app/issues/1578](https://github.com/gitroomhq/postiz-app/issues/1578), still open, not fixed in `v2.25.2`.
@@ -591,5 +700,7 @@ The old Caddy plan is not used. Use the tunnel.
 ## What was not executed on the Mac
 
 This kit was prepared on Linux, not on an M4. The OCI indexes were read from ghcr.io and Docker Hub on 2026-10-24. `shellcheck` 0.9.0 passed on the scripts. `docker compose config` (Compose 2.40.3) rendered Postiz on `127.0.0.1:4007` and Temporal UI on `127.0.0.1:8080`. The Caddy port `127.0.0.1:8088` appears only with `--profile caddy`. Postgres, Redis, and Elasticsearch are not published.
+
+The draft proxy tests were run with `python3 -m unittest discover -s deploy/macmini/draft-proxy -v` against a mock upstream. They were not run on an M4, and the proxy was not placed behind a real tunnel.
 
 The stack was not booted, so container healthchecks were not executed. The tunnel was not created, and no OAuth flow was clicked. `preflight.sh` correctly fails on this Linux host because `uname -m` is not `arm64`. Run it again on the Mac after `.env` is filled in.

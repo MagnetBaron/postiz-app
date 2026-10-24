@@ -1,16 +1,21 @@
 # Copy to ~/.cloudflared/config.yml on the Mac mini. Do not commit the copy.
-# Replace the tunnel UUID, the macOS username, and postiz.example.com.
+# Replace the tunnel UUID, the macOS username, and both hostnames.
 # The credentials JSON is created by `cloudflared tunnel create` and stays
 # in ~/.cloudflared/. It is a secret.
 tunnel: REPLACE_WITH_TUNNEL_UUID
 credentials-file: /Users/REPLACE_WITH_MAC_USER/.cloudflared/REPLACE_WITH_TUNNEL_UUID.json
 
 ingress:
-  # Recommended: tunnel straight to Postiz. No router ports, no Caddy.
+  # Bots. This hostname points only at the draft proxy, never at Postiz.
+  # `cloudflared tunnel route dns postiz bots.example.com`
+  - hostname: bots.example.com
+    service: http://127.0.0.1:4017
+  # Owner dashboard. This hostname points at Postiz. Do not give it to bots.
+  # `cloudflared tunnel route dns postiz postiz.example.com`
   - hostname: postiz.example.com
     service: http://127.0.0.1:4007
-  # Alternative, only after `docker compose --profile caddy up -d`.
-  # Point the hostname at Caddy instead of Postiz, not at both.
+  # Alternative for the owner hostname only, after `docker compose --profile caddy up -d`.
+  # Point that hostname at Caddy instead of Postiz, not at both, and not at the proxy.
   # - hostname: postiz.example.com
   #   service: http://127.0.0.1:8088
   - service: http_status:404

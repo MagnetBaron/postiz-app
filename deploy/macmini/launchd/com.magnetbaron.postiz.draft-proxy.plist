@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.magnetbaron.postiz.draft-proxy</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__PYTHON__</string>
+    <string>__ROOT__/draft-proxy/proxy.py</string>
+    <string>serve</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__ROOT__/draft-proxy</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </key>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/postiz-draft-proxy/launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/postiz-draft-proxy/launchd.err.log</string>
+</dict>
+</plist>

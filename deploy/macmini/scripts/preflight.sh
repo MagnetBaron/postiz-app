@@ -253,6 +253,9 @@ check_port() {
     *docker* | *com.docke* | *OrbStack* | *orbstack* | *vpnkit* | *qemu*)
       note "port ${port} is already held by Docker (${names}). Fine if this stack is already up."
       ;;
+    *python* | *Python*)
+      note "port ${port} is already held by Python (${names}). Fine if the draft proxy is already up."
+      ;;
     *)
       bad "port ${port} is in use by: ${names}"
       ;;
@@ -260,6 +263,7 @@ check_port() {
 }
 
 check_port 4007
+check_port 4017
 check_port 8080
 check_port 8088
 
