@@ -1,0 +1,12 @@
+# Real configuration. .env.example is the only env file that belongs in git.
+.env
+.env.*
+!.env.example
+
+# Dumps from scripts/backup.sh
+backups/
+
+# A filled tunnel config and the credentials file from `cloudflared tunnel create`.
+cloudflared/config.yml
+cloudflared/*.json
+*.pem

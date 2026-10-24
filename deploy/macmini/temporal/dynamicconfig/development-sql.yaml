@@ -1,0 +1,9 @@
+# Same file the official compose mounts from dynamicconfig/development-sql.yaml.
+# The "dev setup only" flag is what that compose ships. Left unchanged so
+# Temporal search attributes match the upstream stack.
+limit.maxIDLength:
+  - value: 255
+    constraints: {}
+system.forceSearchAttributesCacheRefreshOnRead:
+  - value: true # Dev setup only. Please don't turn this on in production.
+    constraints: {}
